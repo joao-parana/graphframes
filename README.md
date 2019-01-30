@@ -2,6 +2,7 @@
 [![Build Status](https://travis-ci.org/graphframes/graphframes.svg?branch=master)](https://travis-ci.org/graphframes/graphframes)
 [![codecov.io](http://codecov.io/github/graphframes/graphframes/coverage.svg?branch=master)](http://codecov.io/github/graphframes/graphframes?branch=master)
 
+> O objetivo aqui é gerar o GraphFrames para fazer modificações para o WfF.
 
 # GraphFrames: DataFrame-based Graphs
 
