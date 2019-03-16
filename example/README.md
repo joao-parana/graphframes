@@ -1,6 +1,258 @@
 # Graphframes Examples
 
-## On-Time Flight Performance with GraphFrames for Apache Spark
+> IMPORTANTE: certifique-se que está usando a versão 8 do Java. Não pode ser inferior nem superior. O seu Spark também deve ser a versão 2.4. Não pode ser inferior nem superior
+
+
+## Using Scala
+
+```bash
+spark-shell --packages graphframes:graphframes:0.7.0-spark2.4-s_2.11
+```
+
+### Tutorial
+
+Devemos importar alguns pacotes adicionais
+
+```scala
+import scala.reflect.runtime.universe.TypeTag
+
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.functions.{col, lit, randn, udf}
+
+import org.graphframes.GraphFrame
+import org.graphframes.GraphFrame._
+
+```
+
+
+A `spark-shell` disponibiliza um objeto `org.apache.spark.sql.SparkSession` na `val spark`, então podemos ubter uma `org.apache.spark.SparkContext` assim:
+
+```scala
+/**
+ * Returns an empty GraphFrame of the given ID type.
+ */
+def empty[T: TypeTag]: GraphFrame = {
+  import spark.implicits._
+  val vertices = Seq.empty[Tuple1[T]].toDF(ID)
+  val edges = Seq.empty[(T, T)].toDF(SRC, DST)
+  GraphFrame(vertices, edges)
+}
+
+/**
+ * Graph of friends in a social network.
+ */
+def friends: GraphFrame = {
+  // For the same reason as above, this cannot be a value.
+  // Vertex DataFrame 
+  val v = spark.createDataFrame(List(
+    ("a", "Alice", 34),
+    ("b", "Bob", 36),
+    ("c", "Charlie", 30),
+    ("d", "David", 29),
+    ("e", "Esther", 32),
+    ("f", "Fanny", 36),
+    ("g", "Gabby", 60)
+  )).toDF("id", "name", "age")
+  // Edge DataFrame
+  val e = spark.createDataFrame(List(
+    ("a", "b", "friend"),
+    ("b", "c", "follow"),
+    ("c", "b", "follow"),
+    ("f", "c", "follow"),
+    ("e", "f", "follow"),
+    ("e", "d", "friend"),
+    ("d", "a", "friend"),
+    ("a", "e", "friend")
+  )).toDF("src", "dst", "relationship")
+  // Create a GraphFrame
+  GraphFrame(v, e)
+}
+val f = empty[String]
+val g = friends
+
+// Este motif mostra os pares de pessoas que segue uma a outra e que são maiores de idade.
+g.find("(a)-[e]->(b); (b)-[e2]->(a)").filter("b.age > 18").show()
+
+```
+
+```text
++----------------+--------------+----------------+--------------+
+|               a|             e|               b|            e2|
++----------------+--------------+----------------+--------------+
+|    [b, Bob, 36]|[b, c, follow]|[c, Charlie, 30]|[c, b, follow]|
+|[c, Charlie, 30]|[c, b, follow]|    [b, Bob, 36]|[b, c, follow]|
++----------------+--------------+----------------+--------------+
+```
+
+```scala
+// Display the vertex and edge DataFrames
+g.vertices.show()
+g.edges.show()
+
+// Get a DataFrame with columns "id" and "inDeg" (in-degree)
+val vertexInDegrees: DataFrame = g.inDegrees
+// and show them.
+vertexInDegrees.show()
+
+// Find the youngest user's age in the graph.
+// This queries the vertex DataFrame.
+g.vertices.groupBy().min("age").show()
+
+// Count the number of "follows" in the graph.
+// This queries the edge DataFrame.
+val numFollows = g.edges.filter("relationship = 'follow'").count()
+
+// Search for pairs of vertices with edges in both directions between them.
+val motifs: DataFrame = g.find("(a)-[e]->(b); (b)-[e2]->(a)")
+motifs.show()
+motifs.filter("b.age > 18").show()
+
+import org.apache.spark.sql.Column
+import org.apache.spark.sql.functions.{col, when}
+
+// Find chains of 4 vertices.
+val chain4 = g.find("(a)-[ab]->(b); (b)-[bc]->(c); (c)-[cd]->(d)")
+
+// Query on sequence, with state (cnt)
+//  (a) Define method for updating state given the next element of the motif.
+def sumFriends(cnt: Column, relationship: Column): Column = {
+  when(relationship === "friend", cnt + 1).otherwise(cnt)
+}
+
+//  (b) Use sequence operation to apply method to sequence of elements in motif.
+//      In this case, the elements are the 3 edges.
+val condition = { Seq("ab", "bc", "cd")
+  .foldLeft(lit(0))((cnt, e) => sumFriends(cnt, col(e)("relationship"))) }
+
+//  (c) Apply filter to DataFrame.
+val chainWith2Friends2 = chain4.where(condition >= 2)
+chainWith2Friends2.show()
+
+// Select subgraph of users older than 30, and relationships of type "friend".
+// Drop isolated vertices (users) which are not contained in any edges (relationships).
+val g1 = g.filterVertices("age > 30").filterEdges("relationship = 'friend'").dropIsolatedVertices()
+g1.edges.show()
+
+// Select subgraph based on edges "e" of type "follow"
+// pointing from a younger user "a" to an older user "b".
+val paths = { g.find("(a)-[e]->(b)")
+  .filter("e.relationship = 'follow'")
+  .filter("a.age < b.age") }
+// "paths" contains vertex info. Extract the edges.
+val e2 = paths.select("e.src", "e.dst", "e.relationship")
+// The user may simplify this call:
+//  val e2 = paths.select("e.*")
+
+// Construct the subgraph
+val g2 = GraphFrame(g.vertices, e2)
+g2.edges.show()
+
+// Busca em largura 
+// Breadth-first search (BFS) finds the shortest path(s) from one vertex 
+// (or a set of vertices) to another vertex (or a set of vertices). 
+// The beginning and end vertices are specified as Spark DataFrame 
+// expressions.
+// Search from "Esther" for users of age < 40.
+val paths = g.bfs.fromExpr("name = 'Esther'").toExpr("age < 40 and name != 'Esther'").run()
+paths.show()
+
+// Componentes conectados
+// Computes the connected component membership of each vertex and returns a graph 
+// with each vertex assigned a component ID.
+sc.setCheckpointDir(".")
+val result = g.connectedComponents.run()
+result.select("id", "component").orderBy("component").show()
+
+// Strongly connected components
+// Compute the strongly connected component (SCC) of each vertex and return 
+// a graph with each vertex assigned to the SCC containing that vertex.
+val result = g.stronglyConnectedComponents.maxIter(10).run()
+result.select("id", "component").orderBy("component").show()
+
+// Label Propagation Algorithm (LPA)
+// Run static Label Propagation Algorithm for detecting communities in networks.
+// Each node in the network is initially assigned to its own community. 
+// At every superstep, nodes send their community affiliation to all neighbors 
+// and update their state to the mode community affiliation of incoming messages.
+// LPA is a standard community detection algorithm for graphs. It is very 
+// inexpensive computationally, although (1) convergence is not guaranteed 
+// and (2) one can end up with trivial solutions (all nodes are identified 
+// into a single community).
+val result = g.labelPropagation.maxIter(5).run()
+result.select("id", "label").show()
+
+// PageRank
+// There are two implementations of PageRank.
+// The first one uses the org.apache.spark.graphx.graph interface with aggregateMessages 
+// and runs PageRank for a fixed number of iterations. This can be executed by setting maxIter.
+// The second implementation uses the org.apache.spark.graphx.Pregel interface and 
+// runs PageRank until convergence and this can be run by setting tol.
+// Both implementations support non-personalized and personalized PageRank, where 
+// setting a sourceId personalizes the results for that vertex.
+
+// Run PageRank until convergence to tolerance "tol".
+val results = g.pageRank.resetProbability(0.15).tol(0.01).run()
+
+// Display resulting pageranks and final edge weights
+// Note that the displayed pagerank may be truncated, e.g., missing the E notation.
+// In Spark 1.5+, you can use show(truncate=false) to avoid truncation.
+results.vertices.select("id", "pagerank").show()
+results.edges.select("src", "dst", "weight").show()
+
+// Run PageRank for a fixed number of iterations.
+val results2 = g.pageRank.resetProbability(0.15).maxIter(10).run()
+results2.edges.show
+// Run PageRank personalized for vertex "a"
+val results3 = g.pageRank.resetProbability(0.15).maxIter(10).sourceId("a").run()
+results3.edges.show
+
+// Run PageRank personalized for vertex ["a", "b", "c", "d"] in parallel
+val results3 = g.parallelPersonalizedPageRank.resetProbability(0.15).maxIter(10).sourceIds(Array("a", "b", "c", "d")).run()
+results3.edges.show
+
+// Since GraphFrames are built around DataFrames, they automatically support 
+// saving and loading to and from the same set of datasources. 
+g.vertices.write.parquet("vertices")
+g.edges.write.parquet("edges")
+
+```
+
+## Using Python
+
+```bash
+pyspark --packages graphframes:graphframes:0.7.0-spark2.4-s_2.11
+```
+
+### Tutorial
+
+```python
+# Create a Vertex DataFrame with unique ID column "id"
+v = spark.createDataFrame([
+  ("a", "Alice", 34),
+  ("b", "Bob", 36),
+  ("c", "Charlie", 30),
+], ["id", "name", "age"])
+
+# Create an Edge DataFrame with "src" and "dst" columns
+e = sqlContext.createDataFrame([
+  ("a", "b", "friend"),
+  ("b", "c", "follow"),
+  ("c", "b", "follow"),
+], ["src", "dst", "relationship"])
+# Create a GraphFrame
+from graphframes import *
+g = GraphFrame(v, e)
+
+# Query: Get in-degree of each vertex.
+g.inDegrees.show()
+
+```
+
+
+
+### On-Time Flight Performance with GraphFrames for Apache Spark
 
 ```bash
 cat DATA/tripVertices.csv 
