@@ -26,7 +26,6 @@ import org.apache.spark.sql.functions.{col, lit, randn, udf, desc}
 import org.graphframes.GraphFrame
 import org.graphframes.GraphFrame._
 
-
 ```
 
 
@@ -86,6 +85,17 @@ val g = friends
 // Lista as 5 pessoas mais seguidas na rede
 val mostConnected = getMostConnected(g, 5)
 mostConnected.show()
+
+// Pessoas que seguem o Bob
+val connectedToBob = g.find("(a)-[e]->(b)").
+  filter("b.id = 'b'").
+  select("a.id", "a.name")
+connectedToBob.show()  
+
+// Pessoas que talvez a Alice conheça 
+val peopleYouMayKnow = g.find("(a)-[e]->(b); (b)-[e2]->(c); !(a)-[]->(c)").
+  filter("a.id = 'a'").select("c.id", "c.name")
+peopleYouMayKnow.show()
 
 // Este motif mostra os pares de pessoas que segue uma a outra e que são maiores de idade.
 g.find("(a)-[e]->(b); (b)-[e2]->(a)").filter("b.age > 18").show()
