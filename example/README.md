@@ -19,10 +19,13 @@ import scala.reflect.runtime.universe.TypeTag
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.functions.{col, lit, randn, udf}
+import org.apache.spark.sql.Dataset
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.functions.{col, lit, randn, udf, desc}
 
 import org.graphframes.GraphFrame
 import org.graphframes.GraphFrame._
+
 
 ```
 
@@ -41,10 +44,17 @@ def empty[T: TypeTag]: GraphFrame = {
 }
 
 /**
+ * Returns a list containing the most connected persons.
+ */
+def getMostConnected(g: GraphFrame, topN: Int): Dataset[Row] = {
+    val gInDegrees = g.inDegrees
+    g.vertices.join(gInDegrees, "id").orderBy(desc("inDegree")).limit(topN)
+}
+
+/**
  * Graph of friends in a social network.
  */
 def friends: GraphFrame = {
-  // For the same reason as above, this cannot be a value.
   // Vertex DataFrame 
   val v = spark.createDataFrame(List(
     ("a", "Alice", 34),
@@ -66,11 +76,16 @@ def friends: GraphFrame = {
     ("d", "a", "friend"),
     ("a", "e", "friend")
   )).toDF("src", "dst", "relationship")
+
   // Create a GraphFrame
   GraphFrame(v, e)
 }
-val f = empty[String]
+
 val g = friends
+
+// Lista as 5 pessoas mais seguidas na rede
+val mostConnected = getMostConnected(g, 5)
+mostConnected.show()
 
 // Este motif mostra os pares de pessoas que segue uma a outra e que são maiores de idade.
 g.find("(a)-[e]->(b); (b)-[e2]->(a)").filter("b.age > 18").show()
